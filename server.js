@@ -17,12 +17,12 @@ const {
   PORT = 5050,
 } = process.env;
 
-const required = { OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, PUBLIC_HOST, CALL_TOKEN };
+const required = { OPENAI_API_KEY };
 for (const [name, value] of Object.entries(required)) {
   if (!value) throw new Error(`Missing ${name}`);
 }
 
-const host = PUBLIC_HOST.replace(/^https?:\/\//, '').replace(/\/$/, '');
+const configuredHost = PUBLIC_HOST?.replace(/^https?:\/\//, '').replace(/\/$/, '');
 const app = Fastify({ logger: true });
 await app.register(websocket);
 
@@ -45,8 +45,19 @@ function safeClose(socket) {
 
 app.get('/health', async () => ({ ok: true }));
 
+app.get('/twiml', async (request, reply) => {
+  const host = configuredHost || request.headers.host;
+  reply.type('text/xml').send(
+    `<Response><Connect><Stream url="wss://${host}/media-stream" /></Connect></Response>`,
+  );
+});
+
 app.get('/call', async (request, reply) => {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !CALL_TOKEN) {
+    return reply.code(501).send({ ok: false, error: 'Twilio REST calling is not configured. Use /twiml from Twilio Console.' });
+  }
   if (request.query?.token !== CALL_TOKEN) return reply.code(403).send({ ok: false });
+  const host = configuredHost || request.headers.host;
   const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
   const call = await client.calls.create({
     from: PHONE_NUMBER_FROM,
