@@ -47,7 +47,7 @@ function sendJson(socket, event) {
 
 app.get('/health', async () => ({ ok: true }));
 
-app.get('/twiml', async (request, reply) => {
+app.all('/twiml', async (request, reply) => {
   const host = configuredHost || request.headers.host;
   app.log.info({ host }, 'serving TwiML');
   reply.type('text/xml').send(
