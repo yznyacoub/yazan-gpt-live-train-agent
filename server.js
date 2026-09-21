@@ -23,6 +23,9 @@ if (!OPENAI_API_KEY) throw new Error('Missing OPENAI_API_KEY');
 const configuredHost = PUBLIC_HOST?.replace(/^https?:\/\//, '').replace(/\/$/, '');
 const app = Fastify({ logger: true });
 await app.register(websocket);
+app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (request, body, done) => {
+  done(null, Object.fromEntries(new URLSearchParams(body)));
+});
 
 const OPENING = 'مرحبا، معك مساعد يزن يعقوب الشخصي. عندي استفسار صغير عن ترتيب قطار تبليسي إلى باتومي، إذا سمحت.';
 
