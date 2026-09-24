@@ -3,6 +3,13 @@ import websocket from '@fastify/websocket';
 import WebSocket from 'ws';
 import twilio from 'twilio';
 import dotenv from 'dotenv';
+import {
+  buildInitialConversationEvents,
+  buildSessionUpdate,
+  buildTwilioMediaEvent,
+  buildTwiml,
+  createInterruptionEvents,
+} from './realtime-bridge.js';
 
 dotenv.config();
 
@@ -10,11 +17,12 @@ const {
   OPENAI_API_KEY,
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
-  PHONE_NUMBER_FROM = '+17372508034',
-  PHONE_NUMBER_TO = '+971544999727',
+  PHONE_NUMBER_FROM,
+  PHONE_NUMBER_TO,
   PUBLIC_HOST,
   CALL_TOKEN,
-  REALTIME_MODEL = 'gpt-realtime',
+  REALTIME_MODEL = 'gpt-realtime-2.1',
+  REALTIME_VOICE = 'marin',
   PORT = 5050,
 } = process.env;
 
@@ -53,13 +61,11 @@ app.get('/health', async () => ({ ok: true }));
 app.all('/twiml', async (request, reply) => {
   const host = configuredHost || request.headers.host;
   app.log.info({ host }, 'serving TwiML');
-  reply.type('text/xml').send(
-    `<Response><Connect><Stream url="wss://${host}/media-stream" /></Connect></Response>`,
-  );
+  reply.type('text/xml').send(buildTwiml(host));
 });
 
 app.get('/call', async (request, reply) => {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !CALL_TOKEN) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !CALL_TOKEN || !PHONE_NUMBER_FROM || !PHONE_NUMBER_TO) {
     return reply.code(501).send({ ok: false, error: 'Twilio REST calling is not configured.' });
   }
   if (request.query?.token !== CALL_TOKEN) return reply.code(403).send({ ok: false });
@@ -78,13 +84,17 @@ app.get('/media-stream', { websocket: true }, (twilioSocket) => {
   let streamSid;
   let realtimeReady = false;
   let greeted = false;
+  let latestMediaTimestampMs = 0;
+  let responseStartedAtMs = null;
+  let lastAssistantItemId = null;
+  let pendingMarks = 0;
 
   app.log.info('Twilio media stream connected');
 
   const openai = new WebSocket(`wss://api.openai.com/v1/realtime?model=${encodeURIComponent(REALTIME_MODEL)}`, {
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
-      'OpenAI-Beta': 'realtime=v1',
+      'OpenAI-Safety-Identifier': 'yazan-train-agent',
       'User-Agent': 'yazan-train-assistant/node 1.1.0',
     },
   });
@@ -92,28 +102,16 @@ app.get('/media-stream', { websocket: true }, (twilioSocket) => {
   const maybeGreet = () => {
     if (!streamSid || !realtimeReady || greeted) return;
     greeted = true;
-    sendJson(openai, {
-      type: 'response.create',
-      response: {
-        modalities: ['audio', 'text'],
-        instructions: OPENING,
-      },
-    });
+    for (const event of buildInitialConversationEvents(OPENING)) sendJson(openai, event);
   };
 
   openai.on('open', () => {
     app.log.info({ model: REALTIME_MODEL }, 'OpenAI Realtime socket opened');
-    sendJson(openai, {
-      type: 'session.update',
-      session: {
-        modalities: ['audio', 'text'],
-        instructions: INSTRUCTIONS,
-        voice: 'marin',
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        turn_detection: { type: 'server_vad' },
-      },
-    });
+    sendJson(openai, buildSessionUpdate({
+      model: REALTIME_MODEL,
+      voice: REALTIME_VOICE,
+      instructions: INSTRUCTIONS,
+    }));
   });
 
   openai.on('message', (raw) => {
@@ -129,10 +127,29 @@ app.get('/media-stream', { websocket: true }, (twilioSocket) => {
       realtimeReady = true;
       app.log.info({ type: event.type }, 'OpenAI Realtime session ready');
       maybeGreet();
-    } else if (event.type === 'response.audio.delta' && streamSid && twilioSocket.readyState === WebSocket.OPEN) {
-      twilioSocket.send(JSON.stringify({ event: 'media', streamSid, media: { payload: event.delta } }));
-    } else if (event.type === 'response.audio_transcript.delta') {
+    } else if (event.type === 'response.output_audio.delta' && streamSid && twilioSocket.readyState === WebSocket.OPEN) {
+      twilioSocket.send(JSON.stringify(buildTwilioMediaEvent(streamSid, event.delta)));
+      if (responseStartedAtMs === null) responseStartedAtMs = latestMediaTimestampMs;
+      if (event.item_id) lastAssistantItemId = event.item_id;
+      twilioSocket.send(JSON.stringify({
+        event: 'mark',
+        streamSid,
+        mark: { name: `audio-${++pendingMarks}` },
+      }));
+    } else if (event.type === 'response.output_audio_transcript.delta') {
       process.stdout.write(event.delta || '');
+    } else if (event.type === 'input_audio_buffer.speech_started' && streamSid && lastAssistantItemId) {
+      const interruption = createInterruptionEvents({
+        streamSid,
+        itemId: lastAssistantItemId,
+        responseStartedAtMs,
+        latestMediaTimestampMs,
+      });
+      sendJson(openai, interruption.openai);
+      sendJson(twilioSocket, interruption.twilio);
+      responseStartedAtMs = null;
+      lastAssistantItemId = null;
+      pendingMarks = 0;
     } else if (event.type === 'error') {
       app.log.error({ error: event.error }, 'OpenAI Realtime error');
     }
@@ -149,10 +166,15 @@ app.get('/media-stream', { websocket: true }, (twilioSocket) => {
 
     if (event.event === 'start') {
       streamSid = event.start.streamSid;
+      latestMediaTimestampMs = 0;
+      responseStartedAtMs = null;
       app.log.info({ streamSid }, 'Twilio media stream started');
       maybeGreet();
     } else if (event.event === 'media' && realtimeReady) {
+      latestMediaTimestampMs = Number(event.media.timestamp || latestMediaTimestampMs);
       sendJson(openai, { type: 'input_audio_buffer.append', audio: event.media.payload });
+    } else if (event.event === 'mark') {
+      pendingMarks = Math.max(0, pendingMarks - 1);
     } else if (event.event === 'stop') {
       app.log.info('Twilio media stream stopped');
       safeClose(openai);
