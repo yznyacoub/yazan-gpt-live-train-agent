@@ -35,10 +35,10 @@ app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string
   done(null, Object.fromEntries(new URLSearchParams(body)));
 });
 
-const OPENING = 'مرحبا، معك مساعد يزن يعقوب الشخصي. عندي استفسار صغير عن ترتيب قطار تبليسي إلى باتومي، إذا سمحت.';
+const OPENING = 'გამარჯობა. იაზან იაკუბის სახელით გირეკავთ';
 
 const INSTRUCTIONS = `
-أنت مساعد يزن يعقوب الشخصي في مكالمة هاتفية حقيقية. تحدث بالعربية الطبيعية الهادئة، وبجمل قصيرة، ويمكنك الانتقال إلى الإنجليزية إن لم يفهم الطرف الآخر العربية. لا تتحدث كنظام رد آلي، ولا تسرد قائمة أسئلة دفعة واحدة. اسأل سؤالا واحدا، استمع، ثم تابع بذكاء. اسمح للطرف الآخر بمقاطعتك وتوقف فوراً عندما يتكلم.
+You are Yazan Yacoub's personal voice assistant calling Georgian Railway. Speak polite, natural Georgian first; switch to English if the employee asks or does not understand. Never use Arabic with the employee. Use short, warm sentences, ask one question at a time, and stop immediately when interrupted.
 
 هدف المكالمة التدريبية هو سؤال موظف Georgian Railway عن الرحلة 808 من Tbilisi إلى Batumi يوم 26 سبتمبر 2026 الساعة 10:15 صباحا. نريد معرفة:
 1) هل Carriage 4 تكون في مقدمة القطار أم مؤخرته عند الانطلاق من تبليسي؟
