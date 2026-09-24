@@ -11,7 +11,7 @@ export function buildSessionUpdate({ model, voice, instructions }) {
         input: {
           format: { type: 'audio/pcmu' },
           turn_detection: {
-            type: 'server_vad',
+            type: 'semantic_vad',            eagerness: 'medium',
             create_response: true,
             interrupt_response: true,
           },
